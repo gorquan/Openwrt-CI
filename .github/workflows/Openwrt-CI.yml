@@ -1,0 +1,210 @@
+name: Openwrt-CI
+
+on:
+  push:
+    branches:
+      - master
+  schedule:
+    - cron: "0 0 * * 5"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    env:
+      GIT_USER_EMAIL: gorquanwu@gmail.com
+      GIT_USER_NAME: gorquan
+
+    steps:
+      - name: Checkout config
+        uses: actions/checkout@master
+        with:
+          ref: master
+          path: config
+
+      - name: Checkout firmware
+        uses: actions/checkout@master
+        with:
+          ref: firmware
+          path: firmware
+
+      - name: Checkout openwrt
+        uses: actions/checkout@master
+        with:
+          repository: openwrt/openwrt
+          path: openwrt
+
+      - name: Checkout lede
+        uses: actions/checkout@master
+        with:
+          repository: coolsnowwolf/lede
+          path: lede
+
+      - name: Checkout port_mirror_patch
+        uses: actions/checkout@master
+        with:
+          repository: maxlicheng/newifid2_port_mirror_patch
+          path: port_mirror
+
+      - name: Set git identity
+        run: |
+          git config --global user.email "$GIT_USER_EMAIL"
+          git config --global user.name "$GIT_USER_NAME"
+
+      - name: Space cleanup
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          docker rmi `docker images -q`
+          sudo rm -rf /usr/share/dotnet /etc/mysql /etc/php /etc/apt/sources.list.d
+          sudo -E apt remove --purge -y azure-cli ghc* zulu* hhvm llvm* firefox google* dotnet* powershell openjdk* mysql* php*
+          sudo -E apt update 
+          sudo -E apt upgrade -y
+          sudo -E apt install -y build-essential asciidoc binutils bzip2 gawk gettext git libncurses5-dev libz-dev patch unzip zlib1g-dev lib32gcc1 libc6-dev-i386 subversion flex uglifyjs git-core gcc-multilib p7zip p7zip-full msmtp libssl-dev texinfo libglib2.0-dev xmlto qemu-utils upx libelf-dev autoconf automake libtool autopoint device-tree-compiler tar
+          sudo -E apt autoremove --purge -y
+          sudo -E apt clean
+          echo "======================="
+          echo "Clean space and install dependency package finish"
+          find ./firmware/Newifi/D2 -name "*.tar.gz" ! -type d | xargs rm -rf {}
+          find ./firmware/Hiwifi/HC5962 -name "*.tar.gz" ! -type d | xargs rm -rf {}
+          echo "======================="
+          echo "Delete the last compliation result finish"
+          mkdir -p ./firmware/Hiwifi/HC5962
+          mkdir -p ./firmware/Newifi/D2
+          echo "======================="
+          echo "Create Rom floder finish"
+
+      - name: Copy lean package to openwrt
+        run: |
+          cp -r ./lede/package/lean ./openwrt/package
+          echo "======================="
+          echo "Copy package finish"
+
+      - name: Update feeds
+        run: |
+          cd openwrt
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+          echo "======================="
+          echo "Install feeds finish"
+
+      - name: Apply patch
+        run: |
+          cp ./port_mirror/port-mirror.patch ./openwrt
+          cd ./openwrt
+          patch -p1 -t < port-mirror.patch
+          echo "========================"
+          echo "Apply patch finish"
+
+      - name: Gernerate Hiwifi-HC5962 config file
+        run: |
+          rm -rf ./openwrt/.config
+          cp ./config/Hiwifi/HC5962/config.diff ./openwrt/.config
+          cd ./openwrt
+          make defconfig
+          echo "======================="
+          echo "Gerenrate Hiwifi-HC5962 config file finish"
+
+      - name: Download package
+        run: |
+          cd openwrt
+          make download -j$(nproc) || make download -j1 V=s
+          echo "======================="
+          echo "Download package finish"
+
+      - name: Complie Hiwifi-HC5962 firmware
+        run: |
+          cd openwrt
+          make -j$(nproc) || make -j1 V=s
+          echo "======================="
+          echo "Build Hiwifi-HC5962 Firmware finish"
+
+      - name: Package Hiwifi-HC5962 Firmware
+        run: |
+          rm -rf ./openwrt/bin/targets/ramips/mt7621/packages
+          find ./openwrt/bin/targets/ramips/mt7621 ! -name "*.bin" ! -type d  | xargs rm -rf {}
+          tar -czvf ./Hiwifi-HC5962.tar.gz ./openwrt/bin/targets/ramips/mt7621
+          echo "======================="
+          echo "Package Hiwifi-HC5962 Firmware Finish"
+
+      - name: Clean up the compilation environment
+        run: |
+          cd openwrt
+          make clean
+          rm -rf .config .config.old
+          echo "======================="
+          echo "Clean up the compilation environment finish"
+
+      - name: Gernerate Newifi-D2 config file
+        run: |
+          cp ./config/Newifi/D2/config.diff ./openwrt/.config
+          cd openwrt
+          make defconfig
+          echo "========================"
+          echo "Gerenrate Newifi-D2 config file finish"
+
+      - name: Complie Newifi-D2 firmware
+        run: |
+          cd openwrt
+          make -j$(nproc) || make -j1 V=s
+          echo "========================"
+          echo "Build Newifi-D2 Firmware finish"
+
+      - name: Package Newifi-D2 Firmware
+        run: |
+          rm -rf ./openwrt/bin/targets/ramips/mt7621/packages
+          find ./openwrt/bin/targets/ramips/mt7621 ! -name "*.bin" ! -type d  | xargs rm -rf {}
+          tar -czvf ./Newifi-D2.tar.gz ./openwrt/bin/targets/ramips/mt7621
+          echo "========================"
+          echo "Package Newifi D2 Firmware Finish"
+
+      - name: Commit the compilation result
+        run: |
+          cp -f ./Hiwifi-HC5962.tar.gz ./firmware/Hiwifi/HC5962
+          cp -f ./Newifi-D2.tar.gz ./firmware/Newifi/D2
+          cd firmware
+          time=$(date "+%Y-%m-%d %H:%M:%S")
+          git add .
+          git commit -m "$time complie"
+
+      - name: Push the compliation result
+        uses: ad-m/github-push-action@master
+        env:
+          github_token: ${{ secrets.openwrt_ci }}
+        with:
+          repository: gorquan/Openwrt-CI
+          branches: firmware
+          directory: firmware
+
+      - name: Create Release
+        id: create_firmware_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.openwrt_ci }}
+        with:
+          tag_name: ${{ github.ref }}
+          target_commitish: firmware
+          release_name: Release new firmware
+          body: Update the firmware for Hiwifi-HC5962 and Newifi-D2
+
+      - name: Upload Hiwifi-HC5962 firmware
+        id: upload_release_hiwifi_HC5962_firmware
+        uses: actions/upload-release-asset@v1.0.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.openwrt_ci }}
+        with:
+          upload_url: ${{ steps.create_firmware_release.outputs.upload_url }}
+          asset_path: ./Hiwifi-HC5962.tar.gz
+          asset_name: Hiwifi-HC5962.tar.gz
+          asset_content_type: application/tar+gzip
+
+      - name: Upload Newifi-D2 firmware
+        id: upload_release_newifi_D2_firmware
+        uses: actions/upload-release-asset@v1.0.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.openwrt_ci }}
+        with:
+          upload_url: ${{ steps.create_firmware_release.outputs.upload_url }}
+          asset_path: ./Newifi-D2.tar.gz
+          asset_name: Newifi-D2.tar.gz
+          asset_content_type: application/tar+gzip
