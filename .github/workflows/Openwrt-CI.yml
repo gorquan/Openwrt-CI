@@ -169,11 +169,10 @@ jobs:
 
       - name: Push the compliation result
         uses: ad-m/github-push-action@master
-        env:
-          github_token: ${{ secrets.openwrt_ci }}
         with:
           repository: gorquan/Openwrt-CI
-          branches: firmware
+          github_token: ${{ secrets.openwrt_ci }}
+          branch: firmware
           directory: firmware
 
       - name: Create Release
